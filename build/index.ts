@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
-* Build script for monifactory-modern
-*
-* This script uses Juke Build, read the docs here:
-* https://github.com/stylemistake/juke-build
-*/
+ * Build script for Monifactory
+ *
+ * This script uses Juke Build, read the docs here:
+ * https://github.com/stylemistake/juke-build
+ */
 
 import fs from "fs";
 import path, { resolve } from "path";
@@ -15,21 +15,13 @@ import { z } from "zod";
 import { progressNumber } from "./lib/log.ts"
 
 Juke.chdir("..", import.meta.url);
-Juke.setup({ file: import.meta.url }).then((code) => {
-    // We're using the currently available quirk in Juke Build, which
-    // prevents it from exiting on Windows, to wait on errors.
-    if (code !== 0 && process.argv.includes("--wait-on-error")) {
-        Juke.logger.error("Please inspect the error and close the window.");
-        return;
-    }
-});
+Juke.setup({ file: import.meta.url }).then(process.exit); // exit on windows
 
 const includeList = [
     "config",
     "defaultconfigs",
     "config-overrides",
     "kubejs",
-//  "mods"
 ]
 
 /** All mods must be lower-case */
@@ -74,45 +66,25 @@ const cpSyncFiltered = (ourDir, newDir, filter) => {
     }
 }
 
-async function packMod(group) {
-    fs.copyFileSync("manifest.json", `dist/${group}/manifest.json`)
-    fs.copyFileSync("dist/modlist.html", `dist/${group}/modlist.html`)
-    fs.copyFileSync("LICENSE.md", `dist/${group}/LICENSE.md`)
-    // Turns out you cant package bat files in CF releases anymore.
-    // fs.copyFileSync('pack-mode-switcher.bat', `dist/${group}/overrides/pack-mode-switcher.bat`)
-    // fs.copyFileSync('pack-mode-switcher.sh', `dist/${group}/overrides/pack-mode-switcher.sh`)
 
+async function zipBuild(group: string) {
     try {
         if (process.platform === "win32") {
-            // Switch build to NM if mode is unset
-            if (!fs.existsSync("config/packmode.json")) {
-                const packSwitchPath = `dist/${group}${group !== "server" ? "/overrides" : ""}`; // to account for server build not being in overrides
-                await Juke.exec("cmd.exe", ["/c", resolve("pack-mode-switcher.bat"), "-r", "-s", "n"], {
-                    cwd: packSwitchPath
-                });
-            }
-
             await Juke.exec("powershell", [
                 "Compress-Archive",
                 `-Path "${resolve(`dist\\${group}\\*`)}"`,
                 `-DestinationPath "${resolve(`dist\\${group}.zip`)}"`,
-            ])
+            ]);
             return;
         }
-
-        // Switch build to NM if mode is unset
-        if (!fs.existsSync("config/packmode.json")) {
-            const packSwitchPath = `dist/${group}${group !== "server" ? "/overrides" : ""}`; // to account for server build not being in overrides
-            await Juke.exec("./pack-mode-switcher.sh", ["-r", "-s", "n"], {
-                cwd: packSwitchPath
-            });
-        }
-
-        let hasZipCmd = false;
+        let hasZipCmd: boolean = false;
         try {
-            await Juke.exec("zip", ["--help"], { silent: true });
+            await Juke.exec("zip", ["--help"], {silent: true});
             hasZipCmd = true;
-        } catch { /* noop */ }
+        } catch {
+            Juke.logger.error("Zip command not found, please install zip")
+            process.exit(1);
+        }
 
         if (hasZipCmd) {
             await Juke.exec("zip", [
@@ -130,10 +102,29 @@ async function packMod(group) {
     }
 }
 
-// for --mode=beta/release
-export const ModeParameter = new Juke.Parameter({
-    type: "string"
-})
+async function applyDefaultMode(configPath: string) {
+    if (!fs.existsSync(`${configPath}/config/packmode.json`)) {
+        if (process.platform === "win32") {
+            await Juke.exec("cmd.exe", ["/c", resolve("pack-mode-switcher.bat"), "-r", "-s", "n"], {
+                cwd: configPath,
+            });
+            return;
+        }
+        await Juke.exec("chmod", ["+x", "pack-mode-switcher.sh"]);
+        await Juke.exec("pack-mode-switcher.sh", ["-r", "-s", "n"], {
+            cwd: configPath,
+        });
+    }
+}
+
+async function packBuild(group: string) {
+    fs.copyFileSync("manifest.json", `dist/${group}/manifest.json`);
+    fs.copyFileSync("dist/modlist.html", `dist/${group}/modlist.html`);
+    fs.copyFileSync("LICENSE.md", `dist/${group}/LICENSE.md`);
+
+    await applyDefaultMode(`dist/${group}${group === "server" ? "" : "/overrides"}`);
+    await zipBuild(group);
+}
 
 export const BuildModlistTarget = new Juke.Target({
     inputs: ["manifest.json"],
@@ -253,7 +244,6 @@ export const BuildClientTarget = new Juke.Target({
         "dist/client/",
         "dist/client.zip",
         ...includeList.map(v => `dist/client/overrides/${v}`),
-        // "dist/client/mods",
     ]),
     executes: async () => {
         fs.mkdirSync("dist/client/overrides", { recursive: true })
@@ -261,7 +251,7 @@ export const BuildClientTarget = new Juke.Target({
             fs.cpSync(folders, `dist/client/overrides/${folders}`, { recursive: true })
         }
 
-        await packMod("client");
+        await packBuild("client");
     }
 })
 
@@ -292,70 +282,55 @@ export const BuildServerTarget = new Juke.Target({
             )
         })
 
-        await packMod("server");
+        await packBuild("server");
     }
 })
 
 export const BuildDevTarget = new Juke.Target({
     dependsOn: [BuildModlistTarget, DownloadModsTarget],
     inputs: [
-    // weird bug with symlinked config and mods folder
+        // weird bug with symlinked config and mods folder
         ...includeList,
         "dist/modlist.html"
     ],
     outputs: () => ([
         "dist/dev/",
-        "dist/.devtmp/",
+        "dist/.devmods/",
         "dist/dev.zip",
         ...includeList.map(v => `dist/dev/overrides/${v}`),
         "dist/dev/overrides/mods",
     ]),
     executes: async () => {
-        Juke.rm("dist/.devtmp", { recursive: true })
+        Juke.rm("dist/.devmods", { recursive: true })
 
         if (fs.existsSync("dist/dev")) {
             Juke.logger.info("Only updating mods as dist/dev exists");
 
             fs.mkdirSync("dist/dev/overrides", { recursive: true });
-            fs.cpSync("dist/modcache", "dist/.devtmp", { recursive: true });
-            fs.cpSync("mods", "dist/.devtmp", { recursive: true });
+            fs.cpSync("dist/modcache", "dist/.devmods", { recursive: true });
+            fs.cpSync("mods", "dist/.devmods", { recursive: true });
             return;
         }
 
         fs.mkdirSync("dist/dev/overrides", { recursive: true });
-        fs.mkdirSync("dist/.devtmp", { recursive: true });
-        for (const folders of includeList.filter(v => !(v === "mods" || v === "config"))) {
+        fs.mkdirSync("dist/.devmods", { recursive: true });
+        for (const folders of includeList.filter(v => !(v === "mods"))) {
             symlinkSync(resolve(folders), resolve(`dist/dev/overrides/${folders}`));
         }
 
         // "merge" both mod folders
-        fs.cpSync("dist/modcache", "dist/.devtmp", { recursive: true });
-        fs.cpSync("mods", "dist/.devtmp", { recursive: true, force: true });
-        symlinkSync(resolve("dist/.devtmp"), resolve("dist/dev/overrides/mods"));
-        // fs.cpSync('dist/.devtmp', 'dist/dev/mods', { recursive: true });
+        fs.cpSync("dist/modcache", "dist/.devmods", { recursive: true });
+        fs.cpSync("mods", "dist/.devmods", { recursive: true, force: true });
+        symlinkSync(resolve("dist/.devmods"), resolve("dist/dev/overrides/mods"));
+        // fs.cpSync('dist/.devmods', 'dist/dev/mods', { recursive: true });
         fs.cpSync("config", "dist/dev/overrides/config", { recursive: true });
 
-        // todo find the mod to blame, or just remove this and the filters up there if this ever gets fixed
-        Juke.logger.warn("Due to a bug with moonlight, symlinking the config folder causes errors which breaks game startup.")
-        Juke.logger.warn("When updating, the config folder requires manual copy.")
-        await packMod("dev")
+        await packBuild("dev")
     }
 })
 
 export const BuildAllTarget = new Juke.Target({
     dependsOn: [BuildServerTarget, BuildClientTarget]
-})
-
-export const UploadTarget = new Juke.Target({
-    dependsOn: [BuildAllTarget],
-    parameters: [ModeParameter],
-    inputs: [
-        "dist/client.zip",
-        "dist/server.zip",
-    ],
-    executes: async ({ get }) => {
-        get(ModeParameter);
-    },
 })
 
 export const CleanCacheTarget = new Juke.Target({
@@ -370,7 +345,7 @@ export const CleanBuildTarget = new Juke.Target({
         Juke.rm("dist/client", { recursive: true });
         Juke.rm("dist/dev", { recursive: true });
         Juke.rm("dist/server", { recursive: true });
-        Juke.rm("dist/.devtmp", { recursive: true });
+        Juke.rm("dist/.devmods", { recursive: true });
         Juke.rm("dist/*.zip");
     },
 })
