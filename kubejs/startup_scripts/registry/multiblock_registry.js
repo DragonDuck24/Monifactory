@@ -19,7 +19,7 @@ GTCEuStartupEvents.registry("gtceu:recipe_type", event => {
             .setEUIO("in")
             .setMaxIOSize(2, 2, 0, 0)
             .setSlotOverlay(false, false, GuiTextures.ARROW_INPUT_OVERLAY)
-            .setProgressBar(GuiTextures.PROGRESS_BAR_ARROW, FillDirection.LEFT_TO_RIGHT)
+            .setProgressBar(MoniGuiTextures.PROGRESS_BAR_SIMULATION, FillDirection.LEFT_TO_RIGHT)
             .setSound(GTSoundEntries.COMPUTATION)
             .setSound(GTSoundEntries.ASSEMBLER)
 
